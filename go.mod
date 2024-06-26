@@ -5,6 +5,7 @@ go 1.21.5
 require (
 	github.com/fiorix/go-smpp v0.0.0-20210403173735-2894b96e70ba
 	github.com/ilyakaznacheev/cleanenv v1.5.0
+	github.com/streadway/amqp v1.1.0
 )
 
 require (
