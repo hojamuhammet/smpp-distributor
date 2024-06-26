@@ -9,14 +9,19 @@ import (
 )
 
 type Config struct {
-	Env  string `yaml:"env"`
-	SMPP `yaml:"smpp"`
+	Env      string `yaml:"env"`
+	SMPP     `yaml:"smpp"`
+	RabbitMQ RabbitMQ `yaml:"rabbitmq"`
 }
 
 type SMPP struct {
 	Addr string `yaml:"address"`
 	User string `yaml:"user"`
 	Pass string `yaml:"password"`
+}
+
+type RabbitMQ struct {
+	URL string `yaml:"url"`
 }
 
 func LoadConfig() *Config {

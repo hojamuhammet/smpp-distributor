@@ -1,15 +1,12 @@
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"os"
 	"smpp-distributor/internal/config"
+	rabbitmq "smpp-distributor/internal/infrastructure"
 	"smpp-distributor/pkg/logger"
-	"strings"
-	"unicode/utf16"
-	"unicode/utf8"
 
 	"github.com/fiorix/go-smpp/smpp"
 	"github.com/fiorix/go-smpp/smpp/pdu"
@@ -17,6 +14,7 @@ import (
 )
 
 var logInstance *logger.Loggers
+var rabbitMQ *rabbitmq.RabbitMQ
 
 func main() {
 	cfg := config.LoadConfig()
@@ -29,7 +27,14 @@ func main() {
 	}
 
 	logInstance.InfoLogger.Info("Server is up and running")
-	slog.Info("Server is up and running")
+
+	// Initialize RabbitMQ
+	rabbitMQ, err = rabbitmq.NewRabbitMQ(cfg.RabbitMQ)
+	if err != nil {
+		logInstance.ErrorLogger.Error("failed to set up RabbitMQ: %v", err)
+		os.Exit(1)
+	}
+	defer rabbitMQ.Close()
 
 	r := &smpp.Receiver{
 		Addr:    cfg.SMPP.Addr,
@@ -48,29 +53,17 @@ func main() {
 }
 
 func handlerFunc(p pdu.Body) {
-	switch p.Header().ID {
-	case pdu.DeliverSMID:
-		f := p.Fields()
-		src := f[pdufield.SourceAddr]
-		dst := f[pdufield.DestinationAddr]
-		txt := f[pdufield.ShortMessage]
+	f := p.Fields()
+	src := f[pdufield.SourceAddr]
+	dst := f[pdufield.DestinationAddr]
+	txt := f[pdufield.ShortMessage]
 
-		// Convert the UCS-2 encoded message to UTF-16
-		ucs2Message := txt.Bytes()
-		utf16Message := make([]uint16, len(ucs2Message)/2)
-		for i := range utf16Message {
-			utf16Message[i] = binary.BigEndian.Uint16(ucs2Message[i*2 : (i+1)*2])
-		}
-		decodedMessage := string(utf16.Decode(utf16Message))
+	message := fmt.Sprintf("Received DeliverSM from=%s to=%s: %s", src.String(), dst.String(), txt.String())
 
-		// If the decoded message is not valid UTF-8 or contains non-Latin characters,
-		// decode it as ASCII or UTF-8 instead
-		if !utf8.ValidString(decodedMessage) || strings.ContainsAny(decodedMessage, "䥫楮摩渠慲愠摩祩瀠慴污湤祲祬祡爠\u2061瑡\u2062慢慬慲浹穹渠獡条琠摩祰⁵污湡渠穡摹") {
-			decodedMessage = string(txt.Bytes())
-		}
+	logInstance.InfoLogger.Info(message)
 
-		logInstance.InfoLogger.Info(fmt.Sprintf("Received message from=%s to=%s: %s", src.String(), dst.String(), decodedMessage))
-	default:
-		fmt.Println("Received PDU:", p)
+	err := rabbitMQ.Publish("sms_queue", src.String(), txt.String())
+	if err != nil {
+		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ: %v", err))
 	}
 }
