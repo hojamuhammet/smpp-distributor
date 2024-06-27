@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
+	"time"
+
 	"smpp-distributor/internal/config"
 	rabbitmq "smpp-distributor/internal/infrastructure"
 	"smpp-distributor/pkg/logger"
-	"sync"
 
 	"github.com/fiorix/go-smpp/smpp"
 	"github.com/fiorix/go-smpp/smpp/pdu"
@@ -15,8 +17,17 @@ import (
 	"github.com/warthog618/sms/encoding/ucs2"
 )
 
-var logInstance *logger.Loggers
-var rabbitMQ *rabbitmq.RabbitMQ
+var (
+	logInstance *logger.Loggers
+	rabbitMQ    *rabbitmq.RabbitMQ
+)
+
+type MessageParts struct {
+	TotalParts int
+	Parts      map[int][]byte
+	Received   int
+	LastUpdate time.Time
+}
 
 // MessagePart struct to hold individual message parts
 type MessagePart struct {
@@ -73,29 +84,25 @@ func handlerFunc(p pdu.Body) {
 		return
 	}
 
-	f := p.Fields()
-	src := f[pdufield.SourceAddr].String()
-	dst := f[pdufield.DestinationAddr].String()
-	shortMessage := f[pdufield.ShortMessage].Bytes()
-
-	// Check if the message is segmented by looking for UDH (User Data Header)
-	if len(shortMessage) > 6 && shortMessage[0] == 0x05 && shortMessage[1] == 0x00 && shortMessage[2] == 0x03 {
-		handleMultipartMessage(src, dst, shortMessage)
+	fields := p.Fields()
+	src := fields[pdufield.SourceAddr].String()
+	dst := fields[pdufield.DestinationAddr].String()
+	shortMessage := fields[pdufield.ShortMessage].Bytes()
+	dcs := fields[pdufield.DataCoding].Bytes()[0]
+	// Check if the message is segmented by looking for UDH (User Data Header) [0 3 214 3 1 0]
+	if fields[pdufield.UDHLength] != nil {
+		handleMultipartMessage(src, dst, shortMessage, fields[pdufield.GSMUserData].Bytes(), dcs)
 	} else {
-		// Single part message
-		dcs := f[pdufield.DataCoding].Bytes()[0]
 		txt := decodeShortMessage(shortMessage, dcs)
 		logAndPublishMessage(src, dst, txt)
 	}
 }
 
-func handleMultipartMessage(src, dst string, shortMessage []byte) {
+func handleMultipartMessage(src, dst string, shortMessage, gsmUserData []byte, dcs byte) {
 	// Parse the UDH to get the message reference number, total parts, and current part number
-	udh := shortMessage[:6]
-	refNum := fmt.Sprintf("%x", udh[3])
-	totalParts := udh[4]
-	currentPart := udh[5]
-	content := shortMessage[6:]
+	refNum := fmt.Sprintf("%x", gsmUserData[2])
+	totalParts := gsmUserData[3]
+	currentPart := gsmUserData[4]
 
 	// Store the message part
 	messageStore.Lock()
@@ -105,7 +112,7 @@ func handleMultipartMessage(src, dst string, shortMessage []byte) {
 	messageStore.store[refNum][currentPart] = MessagePart{
 		TotalParts:  totalParts,
 		CurrentPart: currentPart,
-		Content:     content,
+		Content:     shortMessage,
 	}
 	messageStore.Unlock()
 
@@ -120,7 +127,6 @@ func handleMultipartMessage(src, dst string, shortMessage []byte) {
 		messageStore.Unlock()
 
 		// Decode and log the complete message
-		dcs := byte(0x08) // Assuming UCS2 encoding (16-bit)
 		txt := decodeShortMessage(fullMessage, dcs)
 		logAndPublishMessage(src, dst, txt)
 	}
