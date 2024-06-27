@@ -7,6 +7,7 @@ import (
 	"smpp-distributor/internal/config"
 	rabbitmq "smpp-distributor/internal/infrastructure"
 	"smpp-distributor/pkg/logger"
+	"sync"
 
 	"github.com/fiorix/go-smpp/smpp"
 	"github.com/fiorix/go-smpp/smpp/pdu"
@@ -16,6 +17,20 @@ import (
 
 var logInstance *logger.Loggers
 var rabbitMQ *rabbitmq.RabbitMQ
+
+// MessagePart struct to hold individual message parts
+type MessagePart struct {
+	TotalParts  byte
+	CurrentPart byte
+	Content     []byte
+}
+
+var messageStore = struct {
+	sync.RWMutex
+	store map[string]map[byte]MessagePart
+}{
+	store: make(map[string]map[byte]MessagePart),
+}
 
 func main() {
 	cfg := config.LoadConfig()
@@ -63,22 +78,56 @@ func handlerFunc(p pdu.Body) {
 	dst := f[pdufield.DestinationAddr].String()
 	shortMessage := f[pdufield.ShortMessage].Bytes()
 
-	// Check the PDU header ID to determine the message type
-	pduID := p.Header().ID
-
-	// Decode the short message based on PDU ID and DCS
-	var txt string
-	switch pduID {
-	case pdu.DeliverSMID:
-		// Extract the DCS (Data Coding Scheme)
+	// Check if the message is segmented by looking for UDH (User Data Header)
+	if len(shortMessage) > 6 && shortMessage[0] == 0x05 && shortMessage[1] == 0x00 && shortMessage[2] == 0x03 {
+		handleMultipartMessage(src, dst, shortMessage)
+	} else {
+		// Single part message
 		dcs := f[pdufield.DataCoding].Bytes()[0]
-		txt = decodeShortMessage(shortMessage, dcs)
-	default:
-		logInstance.ErrorLogger.Error(fmt.Sprintf("Unsupported PDU ID: %d", pduID))
-		return
+		txt := decodeShortMessage(shortMessage, dcs)
+		logAndPublishMessage(src, dst, txt)
 	}
+}
 
-	message := fmt.Sprintf("Received DeliverSM from=%s to=%s: %s", src, dst, txt)
+func handleMultipartMessage(src, dst string, shortMessage []byte) {
+	// Parse the UDH to get the message reference number, total parts, and current part number
+	udh := shortMessage[:6]
+	refNum := fmt.Sprintf("%x", udh[3])
+	totalParts := udh[4]
+	currentPart := udh[5]
+	content := shortMessage[6:]
+
+	// Store the message part
+	messageStore.Lock()
+	if _, exists := messageStore.store[refNum]; !exists {
+		messageStore.store[refNum] = make(map[byte]MessagePart)
+	}
+	messageStore.store[refNum][currentPart] = MessagePart{
+		TotalParts:  totalParts,
+		CurrentPart: currentPart,
+		Content:     content,
+	}
+	messageStore.Unlock()
+
+	// Check if all parts are received
+	if len(messageStore.store[refNum]) == int(totalParts) {
+		var fullMessage []byte
+		for i := byte(1); i <= totalParts; i++ {
+			fullMessage = append(fullMessage, messageStore.store[refNum][i].Content...)
+		}
+		messageStore.Lock()
+		delete(messageStore.store, refNum)
+		messageStore.Unlock()
+
+		// Decode and log the complete message
+		dcs := byte(0x08) // Assuming UCS2 encoding (16-bit)
+		txt := decodeShortMessage(fullMessage, dcs)
+		logAndPublishMessage(src, dst, txt)
+	}
+}
+
+func logAndPublishMessage(src, dst, txt string) {
+	message := fmt.Sprintf("Reassembled message from=%s to=%s: %s", src, dst, txt)
 	logInstance.InfoLogger.Info(message)
 
 	// Determine the exchange and routing key based on dst range
