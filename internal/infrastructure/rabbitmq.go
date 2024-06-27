@@ -24,7 +24,6 @@ func NewRabbitMQ(cfg config.RabbitMQ) (*RabbitMQ, error) {
 		return nil, err
 	}
 
-	// Declare the exchange
 	err = channel.ExchangeDeclare(
 		"messages", // name
 		"direct",   // type
@@ -40,7 +39,6 @@ func NewRabbitMQ(cfg config.RabbitMQ) (*RabbitMQ, error) {
 		return nil, err
 	}
 
-	// Declare queues
 	_, err = channel.QueueDeclare(
 		"extra.turkmentv", // name
 		true,              // durable
@@ -69,7 +67,6 @@ func NewRabbitMQ(cfg config.RabbitMQ) (*RabbitMQ, error) {
 		return nil, err
 	}
 
-	// Bind queues to the exchange with routing keys
 	err = channel.QueueBind(
 		"extra.turkmentv", // queue name
 		"extra_key",       // routing key
@@ -107,19 +104,11 @@ func (r *RabbitMQ) Close() {
 	r.conn.Close()
 }
 
-func (r *RabbitMQ) Publish(queue string, src string, txt string) error {
-	routingKey := ""
-	switch queue {
-	case "extra.turkmentv":
-		routingKey = "extra_key"
-	case "sms.turkmentv":
-		routingKey = "sms_key"
-	default:
-		return fmt.Errorf("invalid queue: %s", queue)
-	}
+func (r *RabbitMQ) Publish(queueName, routingKey, src, dst, txt string) error {
+	body := fmt.Sprintf("src=%s, dst=%s, txt=%s", src, dst, txt)
 
-	body := fmt.Sprintf("src=%s, dst=%s, txt=%s", src, queue, txt)
-	err := r.channel.Publish(
+	// Publish the message
+	return r.channel.Publish(
 		"messages", // exchange
 		routingKey, // routing key
 		false,      // mandatory
@@ -127,6 +116,6 @@ func (r *RabbitMQ) Publish(queue string, src string, txt string) error {
 		amqp.Publishing{
 			ContentType: "text/plain",
 			Body:        []byte(body),
-		})
-	return err
+		},
+	)
 }

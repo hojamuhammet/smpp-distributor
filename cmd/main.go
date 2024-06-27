@@ -28,7 +28,6 @@ func main() {
 
 	logInstance.InfoLogger.Info("Server is up and running")
 
-	// Initialize RabbitMQ
 	rabbitMQ, err = rabbitmq.NewRabbitMQ(cfg.RabbitMQ)
 	if err != nil {
 		logInstance.ErrorLogger.Error("failed to set up RabbitMQ: %v", err)
@@ -54,16 +53,25 @@ func main() {
 
 func handlerFunc(p pdu.Body) {
 	f := p.Fields()
-	src := f[pdufield.SourceAddr]
-	dst := f[pdufield.DestinationAddr]
-	txt := f[pdufield.ShortMessage]
+	src := f[pdufield.SourceAddr].String()
+	dst := f[pdufield.DestinationAddr].String()
+	txt := f[pdufield.ShortMessage].String()
 
-	message := fmt.Sprintf("Received DeliverSM from=%s to=%s: %s", src.String(), dst.String(), txt.String())
-
+	message := fmt.Sprintf("Received DeliverSM from=%s to=%s: %s", src, dst, txt)
 	logInstance.InfoLogger.Info(message)
 
-	err := rabbitMQ.Publish("sms_queue", src.String(), txt.String())
+	// Determine the exchange and routing key based on dst range
+	var queueName, routingKey string
+	if dst >= "0500" && dst <= "0555" {
+		queueName = "extra.turkmentv"
+		routingKey = "extra_key"
+	} else {
+		queueName = "sms.turkmentv"
+		routingKey = "sms_key"
+	}
+
+	err := rabbitMQ.Publish(queueName, routingKey, src, dst, txt)
 	if err != nil {
-		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ: %v", err))
+		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ (%s): %v", queueName, err))
 	}
 }
