@@ -29,7 +29,6 @@ type MessageParts struct {
 	LastUpdate time.Time
 }
 
-// MessagePart struct to hold individual message parts
 type MessagePart struct {
 	TotalParts  byte
 	CurrentPart byte
@@ -132,23 +131,43 @@ func handleMultipartMessage(src, dst string, shortMessage, gsmUserData []byte, d
 	}
 }
 
+// func logAndPublishMessage(src, dst, txt string) {
+// 	message := fmt.Sprintf("Reassembled message from=%s to=%s: %s", src, dst, txt)
+// 	logInstance.InfoLogger.Info(message)
+
+// 	// Determine the exchange and routing key based on dst range
+// 	var queueName, routingKey string
+// 	if dst >= "0500" && dst <= "0555" {
+// 		queueName = "extra.turkmentv"
+// 		routingKey = "extra_key"
+// 	} else {
+// 		queueName = "sms.turkmentv"
+// 		routingKey = "sms_key"
+// 	}
+
+// 	err := rabbitMQ.Publish(queueName, routingKey, src, dst, txt)
+// 	if err != nil {
+// 		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ (%s): %v", queueName, err))
+// 	}
+// }
+
 func logAndPublishMessage(src, dst, txt string) {
 	message := fmt.Sprintf("Reassembled message from=%s to=%s: %s", src, dst, txt)
 	logInstance.InfoLogger.Info(message)
 
-	// Determine the exchange and routing key based on dst range
-	var queueName, routingKey string
-	if dst >= "0500" && dst <= "0555" {
-		queueName = "extra.turkmentv"
-		routingKey = "extra_key"
+	// Publish the message to both queues
+	err := rabbitMQ.Publish("extra.turkmentv", src, dst, txt)
+	if err != nil {
+		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ (extra.turkmentv): %v", err))
 	} else {
-		queueName = "sms.turkmentv"
-		routingKey = "sms_key"
+		logInstance.InfoLogger.Info(fmt.Sprintf("Message published to RabbitMQ (extra.turkmentv): %s", message))
 	}
 
-	err := rabbitMQ.Publish(queueName, routingKey, src, dst, txt)
+	err = rabbitMQ.Publish("sms.turkmentv", src, dst, txt)
 	if err != nil {
-		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ (%s): %v", queueName, err))
+		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ (sms.turkmentv): %v", err))
+	} else {
+		logInstance.InfoLogger.Info(fmt.Sprintf("Message published to RabbitMQ (sms.turkmentv): %s", message))
 	}
 }
 
