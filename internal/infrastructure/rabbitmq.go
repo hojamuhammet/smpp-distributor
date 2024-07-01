@@ -3,7 +3,6 @@ package rabbitmq
 import (
 	"fmt"
 	"smpp-distributor/internal/config"
-	"smpp-distributor/pkg/logger"
 
 	"github.com/streadway/amqp"
 )
@@ -12,8 +11,6 @@ type RabbitMQ struct {
 	conn    *amqp.Connection
 	channel *amqp.Channel
 }
-
-var logInstance *logger.Loggers
 
 func NewRabbitMQ(cfg config.RabbitMQ) (*RabbitMQ, error) {
 	conn, err := amqp.Dial(cfg.URL)
@@ -75,11 +72,6 @@ func (r *RabbitMQ) Publish(queueName, src, dst, txt string) error {
 			Body:        []byte(body),
 		},
 	)
-	if err != nil {
-		logInstance.ErrorLogger.Error("Failed to publish message to RabbitMQ (%s): %v\n", queueName, err)
-	} else {
-		logInstance.InfoLogger.Info("Message published to RabbitMQ (%s): %s\n", queueName, body)
-	}
 	return err
 }
 
