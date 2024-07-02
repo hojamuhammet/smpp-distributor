@@ -3,6 +3,7 @@ package rabbitmq
 import (
 	"fmt"
 	"smpp-distributor/internal/config"
+	"time"
 
 	"github.com/streadway/amqp"
 )
@@ -59,9 +60,9 @@ func NewRabbitMQ(cfg config.RabbitMQ) (*RabbitMQ, error) {
 }
 
 func (r *RabbitMQ) Publish(queueName, src, dst, txt string) error {
-	body := fmt.Sprintf("src=%s, dst=%s, txt=%s", src, dst, txt)
+	date := time.Now().Format(time.RFC3339)
+	body := fmt.Sprintf("src=%s, dst=%s, txt=%s, date=%s", src, dst, txt, date)
 
-	// Publish the message
 	err := r.channel.Publish(
 		"",        // exchange (default)
 		queueName, // queue name (routing key)
