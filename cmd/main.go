@@ -10,6 +10,7 @@ import (
 	"smpp-distributor/internal/config"
 	rabbitmq "smpp-distributor/internal/infrastructure"
 	"smpp-distributor/pkg/logger"
+	"smpp-distributor/pkg/utils"
 
 	"github.com/fiorix/go-smpp/smpp"
 	"github.com/fiorix/go-smpp/smpp/pdu"
@@ -48,7 +49,7 @@ func main() {
 	var err error
 	logInstance, err = logger.SetupLogger(cfg.Env)
 	if err != nil {
-		slog.Error("failed to set up logger: %v", err)
+		slog.Error("failed to set up logger: %v", utils.Err(err))
 		os.Exit(1)
 	}
 
@@ -57,7 +58,7 @@ func main() {
 	// Initialize RabbitMQ
 	rabbitMQ, err = rabbitmq.NewRabbitMQ(cfg.RabbitMQ)
 	if err != nil {
-		logInstance.ErrorLogger.Error("failed to set up RabbitMQ: %v", err)
+		logInstance.ErrorLogger.Error("failed to set up RabbitMQ: %v", utils.Err(err))
 		os.Exit(1)
 	}
 	defer rabbitMQ.Close()
