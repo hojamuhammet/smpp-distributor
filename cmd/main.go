@@ -89,16 +89,18 @@ func handlerFunc(p pdu.Body) {
 	dst := fields[pdufield.DestinationAddr].String()
 	shortMessage := fields[pdufield.ShortMessage].Bytes()
 	dcs := fields[pdufield.DataCoding].Bytes()[0]
-	// Check if the message is segmented by looking for UDH (User Data Header) [0 3 214 3 1 0]
+	date := time.Now().Format("2006-01-02T15:04:05")
+
+	// Check if the message is segmented by looking for UDH (User Data Header)
 	if fields[pdufield.UDHLength] != nil {
-		handleMultipartMessage(src, dst, shortMessage, fields[pdufield.GSMUserData].Bytes(), dcs)
+		handleMultipartMessage(src, dst, shortMessage, fields[pdufield.GSMUserData].Bytes(), dcs, date)
 	} else {
 		txt := decodeShortMessage(shortMessage, dcs)
-		logAndPublishMessage(src, dst, txt)
+		logAndPublishMessage(src, dst, txt, date, 1) // Single part message
 	}
 }
 
-func handleMultipartMessage(src, dst string, shortMessage, gsmUserData []byte, dcs byte) {
+func handleMultipartMessage(src, dst string, shortMessage, gsmUserData []byte, dcs byte, date string) {
 	// Parse the UDH to get the message reference number, total parts, and current part number
 	refNum := fmt.Sprintf("%x", gsmUserData[2])
 	totalParts := gsmUserData[3]
@@ -128,43 +130,23 @@ func handleMultipartMessage(src, dst string, shortMessage, gsmUserData []byte, d
 
 		// Decode and log the complete message
 		txt := decodeShortMessage(fullMessage, dcs)
-		logAndPublishMessage(src, dst, txt)
+		logAndPublishMessage(src, dst, txt, date, int(totalParts)) // Reassembled message parts count
 	}
 }
 
-// func logAndPublishMessage(src, dst, txt string) {
-// 	message := fmt.Sprintf("Reassembled message from=%s to=%s: %s", src, dst, txt)
-// 	logInstance.InfoLogger.Info(message)
-
-// 	// Determine the exchange and routing key based on dst range
-// 	var queueName, routingKey string
-// 	if dst >= "0500" && dst <= "0555" {
-// 		queueName = "extra.turkmentv"
-// 		routingKey = "extra_key"
-// 	} else {
-// 		queueName = "sms.turkmentv"
-// 		routingKey = "sms_key"
-// 	}
-
-// 	err := rabbitMQ.Publish(queueName, routingKey, src, dst, txt)
-// 	if err != nil {
-// 		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ (%s): %v", queueName, err))
-// 	}
-// }
-
-func logAndPublishMessage(src, dst, txt string) {
-	message := fmt.Sprintf("Reassembled message from=%s to=%s: %s", src, dst, txt)
+func logAndPublishMessage(src, dst, txt, date string, parts int) {
+	message := fmt.Sprintf("Reassembled message from=%s to=%s: %s, date=%s, parts=%d", src, dst, txt, date, parts)
 	logInstance.InfoLogger.Info(message)
 
 	// Publish the message to both queues
-	err := rabbitMQ.Publish("extra.turkmentv", src, dst, txt)
+	err := rabbitMQ.Publish("extra.turkmentv", src, dst, txt, date, parts)
 	if err != nil {
 		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ (extra.turkmentv): %v", err))
 	} else {
 		logInstance.InfoLogger.Info(fmt.Sprintf("Message published to RabbitMQ (extra.turkmentv): %s", message))
 	}
 
-	err = rabbitMQ.Publish("sms.turkmentv", src, dst, txt)
+	err = rabbitMQ.Publish("sms.turkmentv", src, dst, txt, date, parts)
 	if err != nil {
 		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ (sms.turkmentv): %v", err))
 	} else {
