@@ -115,22 +115,19 @@ func handlerFunc(p pdu.Body) {
 	dcs := fields[pdufield.DataCoding].Bytes()[0]
 	date := time.Now().Format("2006-01-02T15:04:05")
 
-	// Check if the message is segmented by looking for UDH (User Data Header)
 	if fields[pdufield.UDHLength] != nil {
 		handleMultipartMessage(src, dst, shortMessage, fields[pdufield.GSMUserData].Bytes(), dcs, date)
 	} else {
 		txt := decodeShortMessage(shortMessage, dcs)
-		logAndPublishMessage(src, dst, txt, date, 1) // Single part message
+		logAndPublishMessage(src, dst, txt, date, 1)
 	}
 }
 
 func handleMultipartMessage(src, dst string, shortMessage, gsmUserData []byte, dcs byte, date string) {
-	// Parse the UDH to get the message reference number, total parts, and current part number
 	refNum := fmt.Sprintf("%x", gsmUserData[2])
 	totalParts := gsmUserData[3]
 	currentPart := gsmUserData[4]
 
-	// Store the message part
 	messageStore.Lock()
 	if _, exists := messageStore.store[refNum]; !exists {
 		messageStore.store[refNum] = make(map[byte]MessagePart)
@@ -142,7 +139,6 @@ func handleMultipartMessage(src, dst string, shortMessage, gsmUserData []byte, d
 	}
 	messageStore.Unlock()
 
-	// Check if all parts are received
 	if len(messageStore.store[refNum]) == int(totalParts) {
 		var fullMessage []byte
 		for i := byte(1); i <= totalParts; i++ {
@@ -152,9 +148,8 @@ func handleMultipartMessage(src, dst string, shortMessage, gsmUserData []byte, d
 		delete(messageStore.store, refNum)
 		messageStore.Unlock()
 
-		// Decode and log the complete message
 		txt := decodeShortMessage(fullMessage, dcs)
-		logAndPublishMessage(src, dst, txt, date, int(totalParts)) // Reassembled message parts count
+		logAndPublishMessage(src, dst, txt, date, int(totalParts))
 	}
 }
 
@@ -162,7 +157,6 @@ func logAndPublishMessage(src, dst, txt, date string, parts int) {
 	message := fmt.Sprintf("Reassembled message from=%s to=%s: %s, date=%s, parts=%d", src, dst, txt, date, parts)
 	logInstance.InfoLogger.Info(message)
 
-	// Publish the message to both queues
 	err := rabbitMQ.Publish("extra.turkmentv", src, dst, txt, date, parts)
 	if err != nil {
 		logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ (extra.turkmentv): %v", err))
@@ -182,9 +176,8 @@ func decodeShortMessage(shortMessage []byte, dcs byte) string {
 	var txt string
 	switch dcs {
 	case 0x00:
-		txt = string(shortMessage) // Default encoding (7-bit)
+		txt = string(shortMessage)
 	case 0x08:
-		// UCS2 encoding (16-bit)
 		ucs2Text, err := ucs2.Decode(shortMessage)
 		if err != nil {
 			logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to decode UCS2 message: %v", err))

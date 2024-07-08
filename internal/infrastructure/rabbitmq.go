@@ -2,10 +2,12 @@ package rabbitmq
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"smpp-distributor/internal/config"
 	"smpp-distributor/pkg/logger"
+	"smpp-distributor/pkg/utils"
 
 	"github.com/streadway/amqp"
 )
@@ -15,8 +17,10 @@ type RabbitMQ struct {
 	channel     *amqp.Channel
 	config      config.RabbitMQ
 	logInstance *logger.Loggers
+	mutex       sync.Mutex
 }
 
+// NewRabbitMQ creates a new RabbitMQ instance and connects to the RabbitMQ server
 func NewRabbitMQ(cfg config.RabbitMQ, logInstance *logger.Loggers) (*RabbitMQ, error) {
 	r := &RabbitMQ{
 		config:      cfg,
@@ -28,9 +32,13 @@ func NewRabbitMQ(cfg config.RabbitMQ, logInstance *logger.Loggers) (*RabbitMQ, e
 		return nil, err
 	}
 
+	go r.handleReconnect()
+	go r.monitorConnection()
+
 	return r, nil
 }
 
+// connect establishes a connection and channel to RabbitMQ
 func (r *RabbitMQ) connect() error {
 	conn, err := amqp.Dial(r.config.URL)
 	if err != nil {
@@ -43,28 +51,14 @@ func (r *RabbitMQ) connect() error {
 		return err
 	}
 
-	_, err = channel.QueueDeclare(
-		"extra.turkmentv", // name
-		true,              // durable
-		false,             // delete when unused
-		false,             // exclusive
-		false,             // no-wait
-		nil,               // arguments
-	)
+	_, err = channel.QueueDeclare("extra.turkmentv", true, false, false, false, nil)
 	if err != nil {
 		channel.Close()
 		conn.Close()
 		return err
 	}
 
-	_, err = channel.QueueDeclare(
-		"sms.turkmentv", // name
-		true,            // durable
-		false,           // delete when unused
-		false,           // exclusive
-		false,           // no-wait
-		nil,             // arguments
-	)
+	_, err = channel.QueueDeclare("sms.turkmentv", true, false, false, false, nil)
 	if err != nil {
 		channel.Close()
 		conn.Close()
@@ -74,55 +68,119 @@ func (r *RabbitMQ) connect() error {
 	r.conn = conn
 	r.channel = channel
 
+	r.logInstance.InfoLogger.Info("Successfully connected to RabbitMQ")
 	return nil
 }
 
-func (r *RabbitMQ) reconnect() error {
-	r.logInstance.InfoLogger.Info("Attempting to reconnect to RabbitMQ...")
-	var err error
-	for i := 0; i < 5; i++ {
-		err = r.connect()
-		if err == nil {
-			r.logInstance.InfoLogger.Info("Reconnected to RabbitMQ")
-			return nil
+// handleReconnect handles reconnection attempts if the RabbitMQ connection is lost
+func (r *RabbitMQ) handleReconnect() {
+	for {
+		notifyClose := make(chan *amqp.Error)
+		r.conn.NotifyClose(notifyClose)
+
+		err := <-notifyClose
+		r.logInstance.ErrorLogger.Error("RabbitMQ connection lost: ", utils.Err(err))
+
+		for {
+			r.logInstance.InfoLogger.Info("Attempting to reconnect to RabbitMQ...")
+
+			err := r.connect()
+			if err == nil {
+				r.logInstance.InfoLogger.Info("Successfully reconnected to RabbitMQ")
+				break
+			}
+
+			r.logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to reconnect to RabbitMQ: %v", err))
+			time.Sleep(5 * time.Second)
 		}
-		r.logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to reconnect to RabbitMQ (attempt %d): %v", i+1, err))
-		time.Sleep(5 * time.Second)
 	}
-	return fmt.Errorf("failed to reconnect to RabbitMQ after multiple attempts: %w", err)
 }
 
-func (r *RabbitMQ) Publish(queueName, src, dst, txt, date string, parts int) error {
-	body := fmt.Sprintf("src=%s, dst=%s, txt=%s, date=%s, parts=%d", src, dst, txt, date, parts)
+// monitorConnection constantly checks the connection status and logs if the RabbitMQ service is down
+func (r *RabbitMQ) monitorConnection() {
+	for {
+		time.Sleep(10 * time.Second)
 
+		err := r.checkConnection()
+		if err != nil {
+			r.logInstance.ErrorLogger.Error(fmt.Sprintf("RabbitMQ connection check failed: %v", err))
+		}
+	}
+}
+
+// checkConnection performs a simple operation to verify the connection status
+func (r *RabbitMQ) checkConnection() error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	if r.channel == nil {
+		return fmt.Errorf("RabbitMQ channel is nil")
+	}
+
+	// Perform a simple operation to check the connection
 	err := r.channel.Publish(
-		"",        // exchange (default)
-		queueName, // queue name (routing key)
-		false,     // mandatory
-		false,     // immediate
+		"",             // exchange
+		"health_check", // routing key
+		false,          // mandatory
+		false,          // immediate
 		amqp.Publishing{
 			ContentType: "text/plain",
-			Body:        []byte(body),
+			Body:        []byte("health_check"),
 		},
 	)
 
 	if err != nil {
-		if amqpErr, ok := err.(*amqp.Error); ok && amqpErr.Code == 504 {
-			r.logInstance.ErrorLogger.Error(fmt.Sprintf("Connection closed with error %v, trying to reconnect...", amqpErr))
-			reconnectErr := r.reconnect()
-			if reconnectErr != nil {
-				return reconnectErr
-			}
-			// Retry publishing after reconnection
-			return r.Publish(queueName, src, dst, txt, date, parts)
-		}
-		return err
+		return fmt.Errorf("failed to publish health check message: %w", err)
 	}
 
 	return nil
 }
 
+// Publish sends a message to the specified queue, with retry logic on failure
+func (r *RabbitMQ) Publish(queueName, src, dst, txt, date string, parts int) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	body := fmt.Sprintf("src=%s, dst=%s, txt=%s, date=%s, parts=%d", src, dst, txt, date, parts)
+
+	for {
+		err := r.channel.Publish(
+			"",        // exchange
+			queueName, // routing key
+			false,     // mandatory
+			false,     // immediate
+			amqp.Publishing{
+				ContentType: "text/plain",
+				Body:        []byte(body),
+			},
+		)
+
+		if err == nil {
+			return nil
+		}
+
+		r.logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to publish message to RabbitMQ: %v", err))
+
+		if amqpErr, ok := err.(*amqp.Error); ok && (amqpErr.Code == amqp.ChannelError || amqpErr.Code == amqp.ConnectionForced) {
+			r.logInstance.ErrorLogger.Error(fmt.Sprintf("Connection or Channel error occurred: %v", amqpErr))
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		r.logInstance.ErrorLogger.Error(fmt.Sprintf("Unexpected error occurred while publishing: %v", err))
+		return err
+	}
+}
+
+// Close closes the RabbitMQ connection and channel
 func (r *RabbitMQ) Close() {
-	r.channel.Close()
-	r.conn.Close()
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	if r.channel != nil {
+		r.channel.Close()
+	}
+	if r.conn != nil {
+		r.conn.Close()
+	}
 }
