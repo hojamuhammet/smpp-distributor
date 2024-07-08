@@ -19,8 +19,10 @@ import (
 )
 
 var (
-	logInstance *logger.Loggers
-	rabbitMQ    *rabbitmq.RabbitMQ
+	logInstance     *logger.Loggers
+	rabbitMQ        *rabbitmq.RabbitMQ
+	smppReceiver    *smpp.Receiver
+	onCloseRabbitMQ = make(chan bool)
 )
 
 type MessageParts struct {
@@ -56,26 +58,35 @@ func main() {
 	logInstance.InfoLogger.Info("Server is up and running")
 
 	// Initialize RabbitMQ
-	rabbitMQ, err = rabbitmq.NewRabbitMQ(cfg.RabbitMQ, logInstance)
+	rabbitMQ, err = rabbitmq.NewRabbitMQ(cfg.RabbitMQ, logInstance, onCloseRabbitMQ)
 	if err != nil {
 		logInstance.ErrorLogger.Error("failed to set up RabbitMQ: %v", utils.Err(err))
 		os.Exit(1)
 	}
 	defer rabbitMQ.Close()
 
-	for {
-		if connectToSMPP(*cfg) {
-			break
+	go func() {
+		for {
+			status := <-onCloseRabbitMQ
+			if status {
+				logInstance.InfoLogger.Info("RabbitMQ connection lost, stopping SMPP receiver")
+				if smppReceiver != nil {
+					smppReceiver.Close()
+				}
+			} else {
+				logInstance.InfoLogger.Info("RabbitMQ reconnected, starting SMPP receiver")
+				go connectToSMPP(cfg)
+			}
 		}
-		logInstance.InfoLogger.Info("Retrying SMPP connection in 5 seconds...")
-		time.Sleep(5 * time.Second)
-	}
+	}()
+
+	go connectToSMPP(cfg)
 
 	select {}
 }
 
-func connectToSMPP(cfg config.Config) bool {
-	r := &smpp.Receiver{
+func connectToSMPP(cfg *config.Config) {
+	smppReceiver = &smpp.Receiver{
 		Addr:    cfg.SMPP.Addr,
 		User:    cfg.SMPP.User,
 		Passwd:  cfg.SMPP.Pass,
@@ -84,7 +95,7 @@ func connectToSMPP(cfg config.Config) bool {
 
 	connStatus := make(chan smpp.ConnStatusID)
 	go func() {
-		for c := range r.Bind() {
+		for c := range smppReceiver.Bind() {
 			connStatus <- c.Status()
 		}
 	}()
@@ -93,12 +104,17 @@ func connectToSMPP(cfg config.Config) bool {
 		status := <-connStatus
 		if status == smpp.Connected {
 			logInstance.InfoLogger.Info("SMPP connection established")
-			return true
+			return
 		}
 		logInstance.InfoLogger.Info("SMPP connection status: " + status.String())
 		if status == smpp.Disconnected {
 			logInstance.ErrorLogger.Error("SMPP connection failed")
-			return false
+			time.Sleep(5 * time.Second)
+			go func() {
+				for c := range smppReceiver.Bind() {
+					connStatus <- c.Status()
+				}
+			}()
 		}
 	}
 }

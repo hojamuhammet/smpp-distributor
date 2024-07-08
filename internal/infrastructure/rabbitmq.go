@@ -18,13 +18,14 @@ type RabbitMQ struct {
 	config      config.RabbitMQ
 	logInstance *logger.Loggers
 	mutex       sync.Mutex
+	onClose     chan bool // Channel to notify connection close
 }
 
-// NewRabbitMQ creates a new RabbitMQ instance and connects to the RabbitMQ server
-func NewRabbitMQ(cfg config.RabbitMQ, logInstance *logger.Loggers) (*RabbitMQ, error) {
+func NewRabbitMQ(cfg config.RabbitMQ, logInstance *logger.Loggers, onClose chan bool) (*RabbitMQ, error) {
 	r := &RabbitMQ{
 		config:      cfg,
 		logInstance: logInstance,
+		onClose:     onClose,
 	}
 
 	err := r.connect()
@@ -38,7 +39,6 @@ func NewRabbitMQ(cfg config.RabbitMQ, logInstance *logger.Loggers) (*RabbitMQ, e
 	return r, nil
 }
 
-// connect establishes a connection and channel to RabbitMQ
 func (r *RabbitMQ) connect() error {
 	conn, err := amqp.Dial(r.config.URL)
 	if err != nil {
@@ -72,7 +72,6 @@ func (r *RabbitMQ) connect() error {
 	return nil
 }
 
-// handleReconnect handles reconnection attempts if the RabbitMQ connection is lost
 func (r *RabbitMQ) handleReconnect() {
 	for {
 		notifyClose := make(chan *amqp.Error)
@@ -80,6 +79,7 @@ func (r *RabbitMQ) handleReconnect() {
 
 		err := <-notifyClose
 		r.logInstance.ErrorLogger.Error("RabbitMQ connection lost: ", utils.Err(err))
+		r.onClose <- true // Notify the main application
 
 		for {
 			r.logInstance.InfoLogger.Info("Attempting to reconnect to RabbitMQ...")
@@ -87,6 +87,7 @@ func (r *RabbitMQ) handleReconnect() {
 			err := r.connect()
 			if err == nil {
 				r.logInstance.InfoLogger.Info("Successfully reconnected to RabbitMQ")
+				r.onClose <- false // Notify the main application
 				break
 			}
 
@@ -96,7 +97,6 @@ func (r *RabbitMQ) handleReconnect() {
 	}
 }
 
-// monitorConnection constantly checks the connection status and logs if the RabbitMQ service is down
 func (r *RabbitMQ) monitorConnection() {
 	for {
 		time.Sleep(10 * time.Second)
@@ -108,7 +108,6 @@ func (r *RabbitMQ) monitorConnection() {
 	}
 }
 
-// checkConnection performs a simple operation to verify the connection status
 func (r *RabbitMQ) checkConnection() error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -136,7 +135,6 @@ func (r *RabbitMQ) checkConnection() error {
 	return nil
 }
 
-// Publish sends a message to the specified queue, with retry logic on failure
 func (r *RabbitMQ) Publish(queueName, src, dst, txt, date string, parts int) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -172,7 +170,6 @@ func (r *RabbitMQ) Publish(queueName, src, dst, txt, date string, parts int) err
 	}
 }
 
-// Close closes the RabbitMQ connection and channel
 func (r *RabbitMQ) Close() {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
