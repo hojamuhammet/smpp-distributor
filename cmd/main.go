@@ -56,13 +56,25 @@ func main() {
 	logInstance.InfoLogger.Info("Server is up and running")
 
 	// Initialize RabbitMQ
-	rabbitMQ, err = rabbitmq.NewRabbitMQ(cfg.RabbitMQ)
+	rabbitMQ, err = rabbitmq.NewRabbitMQ(cfg.RabbitMQ, logInstance)
 	if err != nil {
 		logInstance.ErrorLogger.Error("failed to set up RabbitMQ: %v", utils.Err(err))
 		os.Exit(1)
 	}
 	defer rabbitMQ.Close()
 
+	for {
+		if connectToSMPP(*cfg) {
+			break
+		}
+		logInstance.InfoLogger.Info("Retrying SMPP connection in 5 seconds...")
+		time.Sleep(5 * time.Second)
+	}
+
+	select {}
+}
+
+func connectToSMPP(cfg config.Config) bool {
 	r := &smpp.Receiver{
 		Addr:    cfg.SMPP.Addr,
 		User:    cfg.SMPP.User,
@@ -70,13 +82,25 @@ func main() {
 		Handler: handlerFunc,
 	}
 
+	connStatus := make(chan smpp.ConnStatusID)
 	go func() {
 		for c := range r.Bind() {
-			logInstance.InfoLogger.Info("SMPP connection status: " + c.Status().String())
+			connStatus <- c.Status()
 		}
 	}()
 
-	select {}
+	for {
+		status := <-connStatus
+		if status == smpp.Connected {
+			logInstance.InfoLogger.Info("SMPP connection established")
+			return true
+		}
+		logInstance.InfoLogger.Info("SMPP connection status: " + status.String())
+		if status == smpp.Disconnected {
+			logInstance.ErrorLogger.Error("SMPP connection failed")
+			return false
+		}
+	}
 }
 
 func handlerFunc(p pdu.Body) {
