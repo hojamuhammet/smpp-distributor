@@ -1,6 +1,7 @@
 package rabbitmq
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -19,6 +20,14 @@ type RabbitMQ struct {
 	logInstance *logger.Loggers
 	mutex       sync.Mutex
 	onClose     chan bool // Channel to notify connection close
+}
+
+type SMSMessage struct {
+	Source      string `json:"src"`
+	Destination string `json:"dst"`
+	Text        string `json:"txt"`
+	Date        string `json:"date"`
+	Parts       int    `json:"parts"`
 }
 
 func NewRabbitMQ(cfg config.RabbitMQ, logInstance *logger.Loggers, onClose chan bool) (*RabbitMQ, error) {
@@ -139,7 +148,19 @@ func (r *RabbitMQ) Publish(queueName, src, dst, txt, date string, parts int) err
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	body := fmt.Sprintf("src=%s, dst=%s, txt=%s, date=%s, parts=%d", src, dst, txt, date, parts)
+	msg := SMSMessage{
+		Source:      src,
+		Destination: dst,
+		Text:        txt,
+		Date:        date,
+		Parts:       parts,
+	}
+
+	body, err := json.Marshal(msg)
+	if err != nil {
+		r.logInstance.ErrorLogger.Error(fmt.Sprintf("Failed to marshal message to JSON: %v", err))
+		return err
+	}
 
 	for {
 		err := r.channel.Publish(
@@ -148,8 +169,8 @@ func (r *RabbitMQ) Publish(queueName, src, dst, txt, date string, parts int) err
 			false,     // mandatory
 			false,     // immediate
 			amqp.Publishing{
-				ContentType: "text/plain",
-				Body:        []byte(body),
+				ContentType: "application/json",
+				Body:        body,
 			},
 		)
 
