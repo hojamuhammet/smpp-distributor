@@ -3,15 +3,25 @@ package config
 import (
 	"log"
 
-	"smpp-distributor/pkg/utils"
-
 	"github.com/ilyakaznacheev/cleanenv"
 )
 
 type Config struct {
-	Env      string `yaml:"env"`
-	SMPP     `yaml:"smpp"`
-	RabbitMQ RabbitMQ `yaml:"rabbitmq"`
+	Env       string    `yaml:"env"`
+	RabbitMQ  RabbitMQ  `yaml:"rabbitmq"`
+	SMPP      SMPP      `yaml:"smpp"`
+	WebSocket WebSocket `yaml:"websocket"`
+}
+
+type RabbitMQ struct {
+	URL        string               `yaml:"url"`
+	Publishers map[string]Publisher `yaml:"publishers"`
+}
+
+type Publisher struct {
+	ExchangeName string `yaml:"exchange_name"`
+	QueueName    string `yaml:"queue_name"`
+	RoutingKey   string `yaml:"routing_key"`
 }
 
 type SMPP struct {
@@ -20,8 +30,8 @@ type SMPP struct {
 	Pass string `yaml:"password"`
 }
 
-type RabbitMQ struct {
-	URL string `yaml:"url"`
+type WebSocket struct {
+	Addr string `yaml:"address"`
 }
 
 func LoadConfig() *Config {
@@ -34,7 +44,7 @@ func LoadConfig() *Config {
 	var cfg Config
 
 	if err := cleanenv.ReadConfig(configPath, &cfg); err != nil {
-		log.Fatalf("Cannot read config: %v", utils.Err(err))
+		log.Fatalf("Cannot read config: %v", err)
 	}
 
 	return &cfg
